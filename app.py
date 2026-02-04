@@ -1,92 +1,151 @@
+1st import:
+
 import streamlit as st
-import pandas as pd
 from snowflake.snowpark.context import get_active_session
 from datetime import datetime
 import json
 
+st.success("✅ Streamlit app loaded successfully")
+st.write("If you can see this, Streamlit is running.")
+
 # ------------------------------------
-# Page Config
+# Page Configuration
 # ------------------------------------
 st.set_page_config(
     page_title="Policy & Control Search",
     layout="wide"
 )
 
-st.title("🔍 Policy & Control Search (Cortex Search POC)")
-
 # ------------------------------------
-# Snowflake Session
+# Get Snowflake Session (AUTO AUTH)
 # ------------------------------------
 session = get_active_session()
 
 # ------------------------------------
-# Sidebar Filters
+# Header
 # ------------------------------------
-st.sidebar.header("📂 Search Filters")
-
-lob_list = ["All"] + [
-    row[0] for row in session.sql(
-        "SELECT DISTINCT LOB FROM AI_POC_DB.HEALTH_POLICY_POC.DOCUMENT_CHUNKS ORDER BY LOB"
-    ).collect()
-]
-
-state_list = ["All"] + [
-    row[0] for row in session.sql(
-        "SELECT DISTINCT STATE FROM AI_POC_DB.HEALTH_POLICY_POC.DOCUMENT_CHUNKS ORDER BY STATE"
-    ).collect()
-]
-
-version_list = ["All"] + [
-    row[0] for row in session.sql(
-        "SELECT DISTINCT VERSION FROM AI_POC_DB.HEALTH_POLICY_POC.DOCUMENT_CHUNKS ORDER BY VERSION"
-    ).collect()
-]
-
-lob = st.sidebar.selectbox("LOB", lob_list)
-state = st.sidebar.selectbox("State", state_list)
-version = st.sidebar.selectbox("Version", version_list)
-
-top_k = st.sidebar.slider("Top Results", 1, 20, 5)
+st.title("📄 Policy & Control Search")
+st.caption("Enterprise policy search using Snowflake Cortex Search")
 
 # ------------------------------------
-# Search Input
+# Sidebar - Search Inputs
 # ------------------------------------
-search_text = st.text_input(
-    "Enter your search query",
-    placeholder="e.g. claim settlement waiting period"
+# ------------------------------------
+# Sidebar - Search Filters (Dynamic)
+# ------------------------------------
+st.sidebar.header("🔎 Search Filters")
+
+# ------------------------------------
+# Allowed business values (CONTROLLED)
+# ------------------------------------
+ALLOWED_LOB = ["Retail", "Corporate", "SME"]
+ALLOWED_STATE = ["CA", "NY", "TX"]
+ALLOWED_VERSION = ["v1", "v2"]
+
+# ------------------------------------
+# Load distinct filter values from table
+# ------------------------------------
+@st.cache_data
+def load_filter_values():
+    df = session.sql("""
+        SELECT DISTINCT
+            LOB,
+            STATE,
+            VERSION
+        FROM AI_POC_DB.HEALTH_POLICY_POC.DOCUMENT_CHUNKS
+    """).to_pandas()
+
+    return {
+        "LOB": sorted(df["LOB"].dropna().unique().tolist()),
+        "STATE": sorted(df["STATE"].dropna().unique().tolist()),
+        "VERSION": sorted(df["VERSION"].dropna().unique().tolist())
+    }
+
+filter_values = load_filter_values()
+
+# ------------------------------------
+# Intersect DB values with allowed values
+# ------------------------------------
+lob_options = ["All"] + [v for v in ALLOWED_LOB if v in filter_values["LOB"]]
+state_options = ["All"] + [v for v in ALLOWED_STATE if v in filter_values["STATE"]]
+version_options = ["All"] + [v for v in ALLOWED_VERSION if v in filter_values["VERSION"]]
+
+# ------------------------------------
+# Search Inputs
+# ------------------------------------
+search_text = st.sidebar.text_input(
+    "Search Query",
+    placeholder="e.g. What is the termination clause?"
+)
+
+lob = st.sidebar.selectbox(
+    "LOB",
+    lob_options
+)
+
+state = st.sidebar.selectbox(
+    "State",
+    state_options
+)
+
+version = st.sidebar.selectbox(
+    "Version",
+    version_options
+)
+
+top_k = st.sidebar.slider(
+    "Top Results",
+    min_value=1,
+    max_value=10,
+    value=5
 )
 
 # ------------------------------------
-# Helper: Build Cortex Filter
+# RBAC (Read-only display)
 # ------------------------------------
-def build_filter():
-    filters = []
+st.sidebar.markdown("---")
 
+current_user = session.sql("SELECT CURRENT_USER()").collect()[0][0]
+current_role = session.sql("SELECT CURRENT_ROLE()").collect()[0][0]
+
+st.sidebar.write("👤 User:", current_user)
+st.sidebar.write("🎭 Role:", current_role)
+
+# ------------------------------------
+# Search Button
+# ------------------------------------
+search_btn = st.sidebar.button("🔍 Search")
+# ------------------------------------
+# Helper: Build Cortex Filter Object
+# ------------------------------------
+def build_filter_sql():
+    filters = []
     if lob != "All":
         filters.append(f"'LOB','{lob}'")
-
     if state != "All":
         filters.append(f"'STATE','{state}'")
-
     if version != "All":
         filters.append(f"'VERSION','{version}'")
 
     return ",".join(filters)
 
 # ------------------------------------
-# Search Button
+# Execute Search
 # ------------------------------------
-if st.button("🔎 Search") and search_text.strip():
+if search_btn and search_text:
 
-    filter_sql = build_filter()
+    st.subheader("📌 Search Results")
 
+    filter_sql = build_filter_sql()
+
+    # --------------------------------
+    # Cortex Search SQL
+    # --------------------------------
     cortex_sql = f"""
     SELECT
-        DOC_ID,
+        DOC_NAME,
+        SECTION_TITLE,
         CHUNK_TEXT,
-        LOB,
-        STATE,
-        VERSION,
         SCORE
     FROM TABLE(
         CORTEX.SEARCH(
@@ -98,64 +157,77 @@ if st.button("🔎 Search") and search_text.strip():
     )
     """
 
-    # Execute Cortex Search
-    result_df = session.sql(cortex_sql).to_pandas()
+    try:
+        # Execute query
+        results_df = session.sql(cortex_sql).to_pandas()
 
-    # ------------------------------------
-    # Display Results
-    # ------------------------------------
-    if result_df.empty:
-        st.warning("No results found.")
-    else:
-        st.success(f"Found {len(result_df)} results")
+        # Convert output to JSON (VARIANT)
+        query_output_json = json.loads(
+            results_df.to_json(orient="records")
+        )
 
-        for idx, row in result_df.iterrows():
-            with st.expander(f"📄 Document: {row['DOC_ID']} (Score: {row['SCORE']:.4f})"):
-                st.markdown(f"**LOB:** {row['LOB']}")
-                st.markdown(f"**State:** {row['STATE']}")
-                st.markdown(f"**Version:** {row['VERSION']}")
-                st.markdown("---")
-                st.write(row["CHUNK_TEXT"])
+        # Display results
+        if results_df.empty:
+            st.warning("No results found. Please adjust filters.")
+        else:
+            for _, row in results_df.iterrows():
+                st.markdown(f"""
+                ### {row['SECTION_TITLE']}
+                **📄 Document:** {row['DOC_NAME']}  
+                **🎯 Score:** {round(row['SCORE'], 3)}
 
-    # ------------------------------------
-    # Audit Logging
-    # ------------------------------------
-    audit_sql = """
-    INSERT INTO POLICY_SEARCH_AUDIT
-    (
-        SEARCH_TEXT,
-        LOB,
-        STATE,
-        VERSION,
-        QUERY_TEXT,
-        QUERY_OUTPUT,
-        RESULT_COUNT,
-        USER_NAME,
-        ROLE_NAME,
-        SEARCH_TS
-    )
-    SELECT
-        %s,
-        %s,
-        %s,
-        %s,
-        %s,
-        PARSE_JSON(%s),
-        %s,
-        CURRENT_USER(),
-        CURRENT_ROLE(),
-        CURRENT_TIMESTAMP()
-    """
+                {row['CHUNK_TEXT']}
+                ---
+                """)
 
-    session.sql(
-        audit_sql,
-        params=[
-            search_text,
-            lob if lob != "All" else None,
-            state if state != "All" else None,
-            version if version != "All" else None,
-            cortex_sql,
-            json.dumps(result_df.to_dict(orient="records")),
-            len(result_df)
-        ]
-    ).collect()
+        # --------------------------------
+        # Audit Logging (MATCHES YOUR TABLE)
+        # --------------------------------
+        session.create_dataframe(
+            [[
+                search_text,
+                None if lob == "All" else lob,
+                None if state == "All" else state,
+                None if version == "All" else version,
+                cortex_sql,
+                query_output_json,
+                len(query_output_json),
+                None,
+                None,
+                datetime.now()
+            ]],
+            schema=[
+                "SEARCH_TEXT",
+                "LOB",
+                "STATE",
+                "VERSION",
+                "QUERY_TEXT",
+                "QUERY_OUTPUT",
+                "RESULT_COUNT",
+                "USER_NAME",
+                "ROLE_NAME",
+                "SEARCH_TS"
+            ]
+        ).write.save_as_table(
+            "POLICY_SEARCH_AUDIT",
+            mode="append"
+        )
+
+        # Update USER + ROLE from Snowflake context
+        session.sql("""
+            UPDATE POLICY_SEARCH_AUDIT
+            SET
+                USER_NAME = CURRENT_USER(),
+                ROLE_NAME = CURRENT_ROLE()
+            WHERE USER_NAME IS NULL
+        """).collect()
+
+    except Exception as e:
+        st.error("❌ Error while executing search")
+        st.code(str(e))
+
+# ------------------------------------
+# Footer
+# ------------------------------------
+st.divider()
+st.caption("Powered by Snowflake Cortex Search • Streamlit in Snowflake")
