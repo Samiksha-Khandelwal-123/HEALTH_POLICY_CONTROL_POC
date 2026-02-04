@@ -3,9 +3,6 @@ from snowflake.snowpark.context import get_active_session
 from datetime import datetime
 import json
 
-st.success("✅ Streamlit app loaded successfully")
-st.write("If you can see this, Streamlit is running.")
-
 # ------------------------------------
 # Page Configuration
 # ------------------------------------
