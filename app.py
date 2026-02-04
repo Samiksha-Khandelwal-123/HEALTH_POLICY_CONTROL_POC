@@ -26,19 +26,19 @@ st.sidebar.header("📂 Search Filters")
 
 lob_list = ["All"] + [
     row[0] for row in session.sql(
-        "SELECT DISTINCT LOB FROM DOCUMENT_CHUNKS ORDER BY LOB"
+        "SELECT DISTINCT LOB FROM AI_POC_DB.HEALTH_POLICY_POC.DOCUMENT_CHUNKS ORDER BY LOB"
     ).collect()
 ]
 
 state_list = ["All"] + [
     row[0] for row in session.sql(
-        "SELECT DISTINCT STATE FROM DOCUMENT_CHUNKS ORDER BY STATE"
+        "SELECT DISTINCT STATE FROM AI_POC_DB.HEALTH_POLICY_POC.DOCUMENT_CHUNKS ORDER BY STATE"
     ).collect()
 ]
 
 version_list = ["All"] + [
     row[0] for row in session.sql(
-        "SELECT DISTINCT VERSION FROM DOCUMENT_CHUNKS ORDER BY VERSION"
+        "SELECT DISTINCT VERSION FROM AI_POC_DB.HEALTH_POLICY_POC.DOCUMENT_CHUNKS ORDER BY VERSION"
     ).collect()
 ]
 
